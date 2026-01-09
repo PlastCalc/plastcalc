@@ -1,3 +1,4 @@
+import io
 import streamlit as st
 import numpy as np
 import trimesh
@@ -14,27 +15,51 @@ def format_pt(value: float, decimals: int = 2) -> str:
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def load_stl_to_mesh(uploaded_file) -> trimesh.Trimesh:
+    """
+    Lê STL enviado no Streamlit e retorna um Trimesh.
+    Usa io.BytesIO (mais robusto no Streamlit Cloud).
+    Suporta casos em que trimesh retorna Scene.
+    """
+    data = uploaded_file.read()
+    stream = io.BytesIO(data)
+
+    mesh = trimesh.load(stream, file_type="stl")
+
+    if isinstance(mesh, trimesh.Scene):
+        if len(mesh.geometry) == 0:
+            raise ValueError("STL carregou como Scene vazia.")
+        mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
+
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise ValueError("Arquivo STL não gerou uma malha válida (Trimesh).")
+
+    if mesh.faces is None or len(mesh.faces) == 0:
+        raise ValueError("Malha sem faces (triângulos).")
+
+    return mesh
+
+
 def projected_area_xy_mm2(mesh: trimesh.Trimesh) -> float:
     """
-    Área projetada (silhueta) do STL no plano XY.
+    Calcula a área projetada (silhueta) do STL no plano XY.
     Assumimos Z como direção de injeção.
-    Usa união (union) dos triângulos projetados com Shapely.
+    Método: projeta triângulos em XY e faz união (union) com Shapely.
 
     Retorna mm².
     """
-    if mesh is None or mesh.is_empty or mesh.faces.size == 0:
+    if mesh is None or mesh.is_empty:
         return 0.0
 
     tris = mesh.triangles  # (n, 3, 3)
     if tris is None or len(tris) == 0:
         return 0.0
 
-    # Projeção em XY
     tris_xy = tris[:, :, :2]  # (n, 3, 2)
 
     polys = []
     for tri in tris_xy:
-        # Filtra triângulos degenerados
+        # Triângulo degenerado?
         if np.linalg.matrix_rank(tri - tri[0]) < 2:
             continue
 
@@ -47,26 +72,6 @@ def projected_area_xy_mm2(mesh: trimesh.Trimesh) -> float:
 
     union = unary_union(polys)
     return float(union.area)
-
-
-def load_stl_to_mesh(uploaded_file) -> trimesh.Trimesh:
-    """
-    Lê STL enviado no Streamlit e retorna um Trimesh.
-    Suporta casos em que trimesh retorna Scene.
-    """
-    data = uploaded_file.read()
-    stream = trimesh.util.wrap_as_stream(data)
-    mesh = trimesh.load_mesh(file_obj=stream, file_type="stl")
-
-    if isinstance(mesh, trimesh.Scene):
-        if len(mesh.geometry) == 0:
-            raise ValueError("STL carregou como Scene vazia.")
-        mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
-
-    if not isinstance(mesh, trimesh.Trimesh):
-        raise ValueError("Arquivo STL não gerou uma malha válida.")
-
-    return mesh
 
 
 # ---------------------------
@@ -94,7 +99,6 @@ st.divider()
 # STL upload + projected area
 # ---------------------------
 st.subheader("📁 Área projetada a partir de STL (recomendado)")
-
 st.warning(
     "Envie o STL **já orientado**: o eixo **Z** deve estar **na direção de injeção**. "
     "A área projetada será calculada no plano **XY**."
@@ -122,10 +126,10 @@ if uploaded is not None:
         try:
             mesh = load_stl_to_mesh(uploaded)
 
-            # converte para mm
+            # Converte unidades para mm
             mesh.apply_scale(scale_to_mm)
 
-            # info básica
+            # Informações do STL
             bounds = mesh.bounds  # [[minx,miny,minz],[maxx,maxy,maxz]]
             size = bounds[1] - bounds[0]
             mesh_info = {
@@ -133,10 +137,12 @@ if uploaded is not None:
                 "Dimensões (mm) X": float(size[0]),
                 "Dimensões (mm) Y": float(size[1]),
                 "Dimensões (mm) Z": float(size[2]),
-                "Watertight": bool(mesh.is_watertight),
+                "Watertight (fechado)": bool(mesh.is_watertight),
             }
 
-            area_from_stl = projected_area_xy_mm2(mesh)
+            with st.spinner("Calculando área projetada (pode levar alguns segundos em STLs grandes)..."):
+                area_from_stl = projected_area_xy_mm2(mesh)
+
             st.success(f"Área projetada (XY): **{format_pt(area_from_stl, 2)} mm²**")
 
             with st.expander("ℹ️ Informações do STL", expanded=False):
@@ -152,13 +158,15 @@ st.divider()
 # ---------------------------
 st.subheader("🧮 Cálculo da força")
 
-# Se veio da página 02, usaremos isso como padrão
+# Integração com página 02 (Pressão por L/t)
 pressao_default = float(st.session_state.get("pressao_mpa", 7.47))
 pressao_veio_da_tabela = "pressao_mpa" in st.session_state
 
 if pressao_veio_da_tabela:
-    st.info(f"Pressão carregada automaticamente da página **Pressão na Cavidade (L/t)**: **{format_pt(pressao_default, 2)} MPa**")
-
+    st.info(
+        f"Pressão carregada automaticamente da página **Pressão na Cavidade (L/t)**: "
+        f"**{format_pt(pressao_default, 2)} MPa**"
+    )
     col_clear, _ = st.columns([1, 3])
     with col_clear:
         if st.button("Limpar pressão automática"):
@@ -187,7 +195,13 @@ with c2:
     )
 
 with c3:
-    fs = st.number_input("Fator de segurança", min_value=1.00, max_value=2.00, value=1.20, step=0.05)
+    fs = st.number_input(
+        "Fator de segurança",
+        min_value=1.00,
+        max_value=2.00,
+        value=1.20,
+        step=0.05
+    )
 
 st.divider()
 
@@ -223,5 +237,5 @@ st.write(
 st.info(
     "💡 **Importante:** a força de fechamento costuma considerar **área projetada total** "
     "(produto + canais/galhos se aplicável). Se quiser, adicionamos um campo opcional para "
-    "**área adicional do sistema de canais**."
+    "**área adicional do sistema de canais** e somamos automaticamente."
 )
