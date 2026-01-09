@@ -25,7 +25,6 @@ def projected_area_xy_mm2(mesh: trimesh.Trimesh) -> float:
     if mesh is None or mesh.is_empty or mesh.faces.size == 0:
         return 0.0
 
-    # Garante que temos triângulos
     tris = mesh.triangles  # (n, 3, 3)
     if tris is None or len(tris) == 0:
         return 0.0
@@ -47,8 +46,6 @@ def projected_area_xy_mm2(mesh: trimesh.Trimesh) -> float:
         return 0.0
 
     union = unary_union(polys)
-
-    # union pode ser Polygon ou MultiPolygon
     return float(union.area)
 
 
@@ -62,7 +59,6 @@ def load_stl_to_mesh(uploaded_file) -> trimesh.Trimesh:
     mesh = trimesh.load_mesh(file_obj=stream, file_type="stl")
 
     if isinstance(mesh, trimesh.Scene):
-        # Concatena todas as geometrias da cena
         if len(mesh.geometry) == 0:
             raise ValueError("STL carregou como Scene vazia.")
         mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
@@ -79,7 +75,7 @@ def load_stl_to_mesh(uploaded_file) -> trimesh.Trimesh:
 st.set_page_config(page_title="Força de Fechamento | PlastCalc", page_icon="🧮", layout="wide")
 
 st.title("🔒 Força de Fechamento do Molde")
-st.caption("Cálculo por área projetada (XY) e pressão efetiva na cavidade (MPa). Z = direção de injeção.")
+st.caption("Cálculo por área projetada (XY) e pressão na cavidade (MPa). **Z = direção de injeção**.")
 
 with st.expander("📌 Fórmulas usadas", expanded=False):
     st.markdown(
@@ -99,13 +95,21 @@ st.divider()
 # ---------------------------
 st.subheader("📁 Área projetada a partir de STL (recomendado)")
 
-st.warning("Envie o STL **já orientado**: o eixo **Z** deve estar **na direção de injeção**. A área projetada será no plano **XY**.")
+st.warning(
+    "Envie o STL **já orientado**: o eixo **Z** deve estar **na direção de injeção**. "
+    "A área projetada será calculada no plano **XY**."
+)
 
 confirm = st.checkbox("Confirmo que o STL está orientado com Z na direção de injeção.", value=True)
 
 uploaded = st.file_uploader("Enviar STL", type=["stl"], accept_multiple_files=False)
 
-unit = st.selectbox("Unidade do STL", ["mm", "cm", "m"], index=0, help="Se o STL estiver em cm ou m, o app converte para mm antes de calcular.")
+unit = st.selectbox(
+    "Unidade do STL",
+    ["mm", "cm", "m"],
+    index=0,
+    help="Se o STL estiver em cm ou m, o app converte para mm antes de calcular."
+)
 scale_to_mm = {"mm": 1.0, "cm": 10.0, "m": 1000.0}[unit]
 
 area_from_stl = None
@@ -148,16 +152,39 @@ st.divider()
 # ---------------------------
 st.subheader("🧮 Cálculo da força")
 
+# Se veio da página 02, usaremos isso como padrão
+pressao_default = float(st.session_state.get("pressao_mpa", 7.47))
+pressao_veio_da_tabela = "pressao_mpa" in st.session_state
+
+if pressao_veio_da_tabela:
+    st.info(f"Pressão carregada automaticamente da página **Pressão na Cavidade (L/t)**: **{format_pt(pressao_default, 2)} MPa**")
+
+    col_clear, _ = st.columns([1, 3])
+    with col_clear:
+        if st.button("Limpar pressão automática"):
+            st.session_state.pop("pressao_mpa", None)
+            st.rerun()
+
 c1, c2, c3 = st.columns(3)
 
 with c1:
     default_area = float(area_from_stl) if area_from_stl is not None else 11816.0
-    area_mm2 = st.number_input("Área projetada (mm²)", min_value=0.0, value=default_area, step=1.0,
-                               help="Se você enviou STL, este valor vem da área projetada no plano XY.")
+    area_mm2 = st.number_input(
+        "Área projetada (mm²)",
+        min_value=0.0,
+        value=default_area,
+        step=1.0,
+        help="Se você enviou STL, este valor vem da área projetada no plano XY."
+    )
 
 with c2:
-    pressao_mpa = st.number_input("Pressão efetiva na cavidade (MPa)", min_value=0.0, value=7.47, step=0.01,
-                                  help="Dica: 1 bar = 0,1 MPa. Use a página de pressão por L/t para estimar.")
+    pressao_mpa = st.number_input(
+        "Pressão efetiva na cavidade (MPa)",
+        min_value=0.0,
+        value=pressao_default,
+        step=0.01,
+        help="Dica: 1 bar = 0,1 MPa. Use a página de pressão por L/t para estimar."
+    )
 
 with c3:
     fs = st.number_input("Fator de segurança", min_value=1.00, max_value=2.00, value=1.20, step=0.05)
