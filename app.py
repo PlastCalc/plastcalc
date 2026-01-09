@@ -1,8 +1,19 @@
 import streamlit as st
 
-st.set_page_config(page_title="PlastCalc", page_icon="🧮", layout="wide")
+st.set_page_config(
+    page_title="PlastCalc",
+    page_icon="🧮",
+    layout="wide"
+)
 
 st.title("🧮 PlastCalc")
-st.caption("Cálculos e ferramentas para engenharia de injeção plástica — by Projeparts")
+st.caption("Engenharia aplicada à injeção plástica • by Projeparts")
 
-st.markdown("Use o menu à esquerda para navegar pelos módulos.")
+st.markdown("""
+### O que você encontra aqui
+- **Força de Fechamento de Molde**
+- **Simulações técnicas**
+- **Gestão básica de projetos e clientes**
+
+> Plataforma em evolução contínua.
+""")
