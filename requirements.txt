@@ -1,3 +1,4 @@
-streamlit==1.37.1
-numpy==1.26.4
-trimesh==4.4.9
+streamlit
+pandas
+python-dateutil
+reportlab
