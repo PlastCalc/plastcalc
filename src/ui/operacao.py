@@ -12,8 +12,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 
 DB_OS = "ordens_servico"
-DB_PV = "vendas_pv"
-DB_ORC = "orcamentos"
 
 
 def _now() -> str:
@@ -21,18 +19,27 @@ def _now() -> str:
 
 
 # -----------------------------
-# Estrutura base
+# Estrutura base (OS -> checklists)
 # -----------------------------
 def _ensure_checklists_struct(os_db: dict, os_id: str):
     os_db[os_id].setdefault("checklists", {})
+
     os_db[os_id]["checklists"].setdefault(
         "produto",
-        {"status": "NAO_CRIADO", "itens": [], "riscos": "", "pendencias": "", "decisoes": "", "aprovacao": ""},
+        {
+            "status": "NAO_CRIADO",  # NAO_CRIADO / CRIADO
+            "itens": [],
+            "riscos": "",
+            "pendencias": "",
+            "decisoes": "",
+            "aprovacao": "",
+        },
     )
+
     os_db[os_id]["checklists"].setdefault(
         "molde",
         {
-            "status": "NAO_CRIADO",
+            "status": "NAO_CRIADO",  # NAO_CRIADO / CRIADO
             "secoes": {},
             "riscos": "",
             "pendencias": "",
@@ -43,7 +50,108 @@ def _ensure_checklists_struct(os_db: dict, os_id: str):
 
 
 # -----------------------------
-# Checklist Molde – Itens
+# Checklist Produto (13 itens)
+# -----------------------------
+CHECKLIST_PRODUTO_ITENS = [
+    "Linha de fechamento do produto",
+    "Espessura do produto",
+    "Marca do ponto de injeção aceitável",
+    "Há risco de rechupe",
+    "Ângulo de saída para desmoldagem",
+    "Necessidade de aplicação de bico quente",
+    "Bordas arredondadas na peça",
+    "Tamanho do produto",
+    "Encaixes do produto",
+    "Número de operações de montagem do produto",
+    "Mecanismo do produto",
+    "Quantidade de peças",
+    "Distribuição do produto no molde",
+]
+
+
+def _init_checklist_produto_items(os_db: dict, os_id: str):
+    prod = os_db[os_id]["checklists"]["produto"]
+    if prod.get("itens"):
+        return
+    prod["itens"] = [{"nome": nome, "ok": False, "obs": ""} for nome in CHECKLIST_PRODUTO_ITENS]
+
+
+def _build_checklist_produto_pdf(os_item: dict, checklist: dict) -> bytes:
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title="Checklist Produto",
+    )
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Ata Técnica — Projeto de Produto (Checklist Produto)", styles["Title"]))
+    story.append(Spacer(1, 8))
+
+    meta = [
+        ["OS", os_item.get("doc", "")],
+        ["Cliente", os_item.get("cliente_nome", "")],
+        ["Título", os_item.get("titulo", "")],
+        ["Status OS", os_item.get("status", "")],
+        ["Aprovação", checklist.get("aprovacao", "") or "-"],
+        ["Gerado em", _now()],
+    ]
+    t_meta = Table(meta, colWidths=[35 * mm, 150 * mm])
+    t_meta.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ]
+        )
+    )
+    story.append(t_meta)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Itens do Checklist", styles["Heading2"]))
+    story.append(Spacer(1, 6))
+
+    data = [["OK", "Item", "Observação"]]
+    for it in checklist.get("itens", []) or []:
+        ok = "✔" if it.get("ok") else ""
+        data.append([ok, it.get("nome", ""), it.get("obs", "")])
+
+    t = Table(data, colWidths=[10 * mm, 70 * mm, 105 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ]
+        )
+    )
+    story.append(t)
+    story.append(Spacer(1, 10))
+
+    def add_block(label: str, text: str):
+        story.append(Paragraph(label, styles["Heading3"]))
+        story.append(Paragraph((text or "-").replace("\n", "<br/>"), styles["BodyText"]))
+        story.append(Spacer(1, 8))
+
+    add_block("Riscos", checklist.get("riscos", ""))
+    add_block("Pendências", checklist.get("pendencias", ""))
+    add_block("Decisões", checklist.get("decisoes", ""))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+# -----------------------------
+# Checklist Molde (seções)
 # -----------------------------
 SECAO_CAVIDADE_MACHO = [
     "Material adequado para o termoplástico",
@@ -111,9 +219,6 @@ def _init_checklist_molde(os_db: dict, os_id: str):
     }
 
 
-# -----------------------------
-# PDF – Checklist Molde
-# -----------------------------
 def _build_checklist_molde_pdf(os_item: dict, checklist: dict) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -159,6 +264,7 @@ def _build_checklist_molde_pdf(os_item: dict, checklist: dict) -> bytes:
         for it in itens:
             ok = "✔" if it.get("ok") else ""
             data.append([ok, it.get("nome", ""), it.get("obs", "")])
+
         t = Table(data, colWidths=[10 * mm, 70 * mm, 105 * mm])
         t.setStyle(
             TableStyle(
@@ -197,31 +303,109 @@ def page_operacao():
     items.sort(key=lambda x: x.get("doc", ""), reverse=True)
 
     if not items:
-        st.info("Nenhuma OS encontrada.")
+        st.info("Nenhuma OS encontrada ainda.")
         return
 
     for o in items:
-        with st.expander(f"{o.get('doc')} • {o.get('cliente_nome')} • {o.get('status')}"):
-            os_id = o.get("id")
+        with st.expander(f"{o.get('doc','')} • {o.get('cliente_nome','')} • {o.get('status','')}"):
+            os_id = o.get("id", "")
+            if not os_id:
+                continue
+
             _ensure_checklists_struct(os_db, os_id)
 
-            st.write(f"**Título:** {o.get('titulo')}")
-            st.write(f"**Criado em:** {o.get('created_at')}")
+            st.write(f"**Título:** {o.get('titulo','')}")
+            st.write(f"**PV:** {o.get('pv_doc','')}")
+            st.write(f"**ORC:** {o.get('orc_doc','')}")
+            st.write(f"**Criado em:** {o.get('created_at','')}")
+            st.write(f"**Atualizado em:** {o.get('updated_at','')}")
 
             st.divider()
-            st.markdown("## Checklist Molde")
+            st.markdown("## Checklists")
 
+            prod = os_db[os_id]["checklists"]["produto"]
             molde = os_db[os_id]["checklists"]["molde"]
-            st.write(f"**Status:** {molde.get('status')}")
 
-            if molde.get("status") != "CRIADO":
-                if st.button("🧩 Criar Checklist Molde", key=f"mk_molde_{os_id}"):
-                    molde["status"] = "CRIADO"
-                    _init_checklist_molde(os_db, os_id)
+            c1, c2 = st.columns(2)
+
+            # --- criar produto
+            with c1:
+                st.subheader("Projeto de Produto")
+                st.write(f"Status: **{prod.get('status','')}**")
+                if prod.get("status") != "CRIADO":
+                    if st.button("🧩 Criar Checklist Produto", key=f"mk_prod_{os_id}"):
+                        prod["status"] = "CRIADO"
+                        _init_checklist_produto_items(os_db, os_id)
+                        os_db[os_id]["updated_at"] = _now()
+                        save(DB_OS, os_db)
+                        st.success("Checklist Produto criado!")
+                        st.rerun()
+
+            # --- criar molde
+            with c2:
+                st.subheader("Projeto de Molde")
+                st.write(f"Status: **{molde.get('status','')}**")
+                if molde.get("status") != "CRIADO":
+                    if st.button("🧩 Criar Checklist Molde", key=f"mk_molde_{os_id}"):
+                        molde["status"] = "CRIADO"
+                        _init_checklist_molde(os_db, os_id)
+                        os_db[os_id]["updated_at"] = _now()
+                        save(DB_OS, os_db)
+                        st.success("Checklist Molde criado!")
+                        st.rerun()
+
+            st.divider()
+            st.markdown("## Checklist Produto (itens + PDF)")
+
+            if prod.get("status") != "CRIADO":
+                st.info("Checklist Produto ainda não foi criado.")
+            else:
+                _init_checklist_produto_items(os_db, os_id)
+
+                for i, item in enumerate(prod["itens"]):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        item["ok"] = st.checkbox(
+                            item["nome"], value=item.get("ok", False), key=f"prod_ok_{os_id}_{i}"
+                        )
+                    with col2:
+                        item["obs"] = st.text_input(
+                            "Observação", value=item.get("obs", ""), key=f"prod_obs_{os_id}_{i}"
+                        )
+
+                prod["riscos"] = st.text_area("Riscos", value=prod.get("riscos", ""), key=f"prod_r_{os_id}")
+                prod["pendencias"] = st.text_area("Pendências", value=prod.get("pendencias", ""), key=f"prod_p_{os_id}")
+                prod["decisoes"] = st.text_area("Decisões", value=prod.get("decisoes", ""), key=f"prod_d_{os_id}")
+
+                aprov_opts = ["", "APROVADO", "APROVADO COM RESSALVAS", "REPROVADO"]
+                aprov_val = prod.get("aprovacao", "")
+                if aprov_val not in aprov_opts:
+                    aprov_val = ""
+                prod["aprovacao"] = st.selectbox(
+                    "Aprovação", aprov_opts, index=aprov_opts.index(aprov_val), key=f"prod_a_{os_id}"
+                )
+
+                colS1, colS2 = st.columns(2)
+                if colS1.button("💾 Salvar Checklist Produto", key=f"save_prod_{os_id}"):
                     os_db[os_id]["updated_at"] = _now()
                     save(DB_OS, os_db)
-                    st.success("Checklist Molde criado!")
+                    st.success("Checklist Produto salvo!")
                     st.rerun()
+
+                pdf_bytes = _build_checklist_produto_pdf(o, prod)
+                colS2.download_button(
+                    "📄 Baixar PDF Checklist Produto",
+                    data=pdf_bytes,
+                    file_name=f"Checklist_Produto_{o.get('doc','OS')}.pdf",
+                    mime="application/pdf",
+                    key=f"dl_prod_{os_id}",
+                )
+
+            st.divider()
+            st.markdown("## Checklist Molde (itens + PDF)")
+
+            if molde.get("status") != "CRIADO":
+                st.info("Checklist Molde ainda não foi criado.")
             else:
                 _init_checklist_molde(os_db, os_id)
 
@@ -238,12 +422,12 @@ def page_operacao():
                                 "Observação", value=it.get("obs", ""), key=f"{os_id}_{secao}_{i}_obs"
                             )
 
-                molde["riscos"] = st.text_area("Riscos", value=molde.get("riscos", ""), key=f"riscos_m_{os_id}")
+                molde["riscos"] = st.text_area("Riscos (Molde)", value=molde.get("riscos", ""), key=f"mol_r_{os_id}")
                 molde["pendencias"] = st.text_area(
-                    "Pendências", value=molde.get("pendencias", ""), key=f"pend_m_{os_id}"
+                    "Pendências (Molde)", value=molde.get("pendencias", ""), key=f"mol_p_{os_id}"
                 )
                 molde["decisoes"] = st.text_area(
-                    "Decisões", value=molde.get("decisoes", ""), key=f"dec_m_{os_id}"
+                    "Decisões (Molde)", value=molde.get("decisoes", ""), key=f"mol_d_{os_id}"
                 )
 
                 aprov_opts = ["", "APROVADO", "APROVADO COM RESSALVAS", "REPROVADO"]
@@ -251,20 +435,40 @@ def page_operacao():
                 if aprov_val not in aprov_opts:
                     aprov_val = ""
                 molde["aprovacao"] = st.selectbox(
-                    "Aprovação", aprov_opts, index=aprov_opts.index(aprov_val), key=f"aprov_m_{os_id}"
+                    "Aprovação (Molde)", aprov_opts, index=aprov_opts.index(aprov_val), key=f"mol_a_{os_id}"
                 )
 
-                colS1, colS2 = st.columns(2)
-                if colS1.button("💾 Salvar Checklist Molde", key=f"save_molde_{os_id}"):
+                colM1, colM2 = st.columns(2)
+                if colM1.button("💾 Salvar Checklist Molde", key=f"save_molde_{os_id}"):
                     os_db[os_id]["updated_at"] = _now()
                     save(DB_OS, os_db)
                     st.success("Checklist Molde salvo!")
                     st.rerun()
 
                 pdf_bytes = _build_checklist_molde_pdf(o, molde)
-                colS2.download_button(
+                colM2.download_button(
                     "📄 Baixar PDF Checklist Molde",
                     data=pdf_bytes,
-                    file_name=f"Checklist_Molde_{o.get('doc')}.pdf",
+                    file_name=f"Checklist_Molde_{o.get('doc','OS')}.pdf",
                     mime="application/pdf",
+                    key=f"dl_molde_{os_id}",
                 )
+
+            st.divider()
+            st.markdown("### Status da OS")
+
+            status_opts = ["ABERTA", "EM_ANDAMENTO", "PAUSADA", "CONCLUIDA"]
+            status_atual = o.get("status", "ABERTA")
+            if status_atual not in status_opts:
+                status_atual = "ABERTA"
+
+            novo_status = st.selectbox(
+                "Status", status_opts, index=status_opts.index(status_atual), key=f"status_{os_id}"
+            )
+
+            if st.button("Salvar status", key=f"save_status_{os_id}"):
+                os_db[os_id]["status"] = novo_status
+                os_db[os_id]["updated_at"] = _now()
+                save(DB_OS, os_db)
+                st.success("Status atualizado!")
+                st.rerun()
