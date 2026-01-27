@@ -16,6 +16,9 @@ def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
 
+# -----------------------------
+# Regras de sugestão (mantidas)
+# -----------------------------
 def _servicos_texto_from_orc(orc: dict) -> str:
     itens = (orc or {}).get("itens", {})
     servicos = itens.get("servicos", []) or []
@@ -27,12 +30,10 @@ def _servicos_texto_from_orc(orc: dict) -> str:
 
 
 def _get_orc_for_os(os_item: dict, pv_db: dict, orc_db: dict) -> dict:
-    # 1) tenta via orc_id da própria OS
     orc_id = os_item.get("orc_id", "") or ""
     if orc_id and orc_id in orc_db:
         return orc_db[orc_id]
 
-    # 2) tenta via pv_id
     pv_id = os_item.get("pv_id", "") or ""
     pv = pv_db.get(pv_id, {}) if pv_id else {}
     orc_id2 = pv.get("orc_id", "") or ""
@@ -43,23 +44,55 @@ def _get_orc_for_os(os_item: dict, pv_db: dict, orc_db: dict) -> dict:
 
 
 def _suggest_from_servicos_text(serv_text: str) -> dict:
-    """
-    Regras:
-    - Produto: "projeto de produto" ou "dfm"
-    - Molde: "projeto de molde" ou "fabricação de molde" ou "ajustes de molde"
-    """
     t = _norm(serv_text)
-
     produto = ("projeto de produto" in t) or ("dfm" in t)
     molde = ("projeto de molde" in t) or ("fabricação de molde" in t) or ("ajustes de molde" in t)
-
     return {"produto": produto, "molde": molde}
 
 
 def _ensure_checklists_struct(os_db: dict, os_id: str):
     os_db[os_id].setdefault("checklists", {})
-    os_db[os_id]["checklists"].setdefault("produto", {"status": "NAO_CRIADO", "itens": []})
+    os_db[os_id]["checklists"].setdefault(
+        "produto",
+        {
+            "status": "NAO_CRIADO",
+            "itens": [],
+            "riscos": "",
+            "pendencias": "",
+            "decisoes": "",
+            "aprovacao": "",
+        },
+    )
     os_db[os_id]["checklists"].setdefault("molde", {"status": "NAO_CRIADO", "itens": []})
+
+
+# -----------------------------
+# Checklist Produto (13 itens)
+# -----------------------------
+CHECKLIST_PRODUTO_ITENS = [
+    "Linha de fechamento do produto",
+    "Espessura do produto",
+    "Marca do ponto de injeção aceitável",
+    "Há risco de rechupe",
+    "Ângulo de saída para desmoldagem",
+    "Necessidade de aplicação de bico quente",
+    "Bordas arredondadas na peça",
+    "Tamanho do produto",
+    "Encaixes do produto",
+    "Número de operações de montagem do produto",
+    "Mecanismo do produto",
+    "Quantidade de peças",
+    "Distribuição do produto no molde",
+]
+
+
+def _init_checklist_produto_items(os_db: dict, os_id: str):
+    itens = os_db[os_id]["checklists"]["produto"].get("itens", [])
+    if itens:
+        return
+    os_db[os_id]["checklists"]["produto"]["itens"] = [
+        {"nome": nome, "ok": False, "obs": ""} for nome in CHECKLIST_PRODUTO_ITENS
+    ]
 
 
 def page_operacao():
@@ -92,75 +125,76 @@ def page_operacao():
             if not os_id:
                 continue
 
+            _ensure_checklists_struct(os_db, os_id)
+
             st.write(f"**Título:** {o.get('titulo','')}")
             st.write(f"**PV:** {o.get('pv_doc','')}")
             st.write(f"**ORC:** {o.get('orc_doc','')}")
             st.write(f"**Criado em:** {o.get('created_at','')}")
             st.write(f"**Atualizado em:** {o.get('updated_at','')}")
 
-            # garantir estrutura
-            _ensure_checklists_struct(os_db, os_id)
-
             st.divider()
-            st.markdown("## Checklists (Produto / Molde)")
+            st.markdown("## Checklist Produto")
 
-            # Puxa ORC e serviços
-            orc = _get_orc_for_os(o, pv_db, orc_db)
-            serv_text = _servicos_texto_from_orc(orc) if orc else ""
-            st.caption(f"Serviços (lidos do orçamento): {serv_text or '-'}")
+            prod = os_db[os_id]["checklists"]["produto"]
+            st.write(f"**Status:** {prod.get('status','')}")
 
-            sugest = _suggest_from_servicos_text(serv_text)
+            if prod.get("status") == "CRIADO":
+                _init_checklist_produto_items(os_db, os_id)
 
-            prod_status = os_db[os_id]["checklists"]["produto"].get("status", "NAO_CRIADO")
-            molde_status = os_db[os_id]["checklists"]["molde"].get("status", "NAO_CRIADO")
+                for i, item in enumerate(prod["itens"]):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        item["ok"] = st.checkbox(
+                            item["nome"],
+                            value=item.get("ok", False),
+                            key=f"prod_ok_{os_id}_{i}",
+                        )
+                    with col2:
+                        item["obs"] = st.text_input(
+                            "Observação",
+                            value=item.get("obs", ""),
+                            key=f"prod_obs_{os_id}_{i}",
+                        )
 
-            colA, colB, colC = st.columns(3)
+                st.markdown("### Riscos")
+                prod["riscos"] = st.text_area(
+                    "Riscos",
+                    value=prod.get("riscos", ""),
+                    key=f"prod_riscos_{os_id}",
+                )
 
-            # Aplicar sugestões
-            if colA.button("✨ Aplicar sugestões", key=f"sug_{os_id}"):
-                changed = False
+                st.markdown("### Pendências")
+                prod["pendencias"] = st.text_area(
+                    "Pendências",
+                    value=prod.get("pendencias", ""),
+                    key=f"prod_pend_{os_id}",
+                )
 
-                if sugest["produto"] and prod_status == "NAO_CRIADO":
-                    os_db[os_id]["checklists"]["produto"]["status"] = "SUGERIDO"
-                    changed = True
+                st.markdown("### Decisões")
+                prod["decisoes"] = st.text_area(
+                    "Decisões",
+                    value=prod.get("decisoes", ""),
+                    key=f"prod_dec_{os_id}",
+                )
 
-                if sugest["molde"] and molde_status == "NAO_CRIADO":
-                    os_db[os_id]["checklists"]["molde"]["status"] = "SUGERIDO"
-                    changed = True
+                st.markdown("### Aprovação")
+                prod["aprovacao"] = st.selectbox(
+                    "Aprovação",
+                    ["", "APROVADO", "APROVADO COM RESSALVAS", "REPROVADO"],
+                    index=["", "APROVADO", "APROVADO COM RESSALVAS", "REPROVADO"].index(
+                        prod.get("aprovacao", "") if prod.get("aprovacao", "") in ["", "APROVADO", "APROVADO COM RESSALVAS", "REPROVADO"] else ""
+                    ),
+                    key=f"prod_aprov_{os_id}",
+                )
 
-                if changed:
+                if st.button("💾 Salvar Checklist Produto", key=f"save_prod_{os_id}"):
                     os_db[os_id]["updated_at"] = _now()
                     save(DB_OS, os_db)
-                    st.success("Sugestões aplicadas na OS.")
+                    st.success("Checklist Produto salvo!")
                     st.rerun()
-                else:
-                    st.info("Nada para sugerir (ou já foi criado/sugerido).")
-
-            # Criar checklist Produto
-            if colB.button("🧩 Criar Checklist Produto", key=f"cria_prod_{os_id}"):
-                if prod_status == "CRIADO":
-                    st.info("Checklist Produto já está criado.")
-                else:
-                    os_db[os_id]["checklists"]["produto"]["status"] = "CRIADO"
-                    # (itens entram na opção 3, por enquanto fica vazio)
-                    os_db[os_id]["updated_at"] = _now()
-                    save(DB_OS, os_db)
-                    st.success("Checklist Produto criado!")
-                    st.rerun()
-
-            # Criar checklist Molde
-            if colC.button("🧩 Criar Checklist Molde", key=f"cria_molde_{os_id}"):
-                if molde_status == "CRIADO":
-                    st.info("Checklist Molde já está criado.")
-                else:
-                    os_db[os_id]["checklists"]["molde"]["status"] = "CRIADO"
-                    os_db[os_id]["updated_at"] = _now()
-                    save(DB_OS, os_db)
-                    st.success("Checklist Molde criado!")
-                    st.rerun()
-
-            st.write(f"**Status Produto:** {os_db[os_id]['checklists']['produto'].get('status','')}")
-            st.write(f"**Status Molde:** {os_db[os_id]['checklists']['molde'].get('status','')}")
+            else:
+                st.info("Checklist Produto ainda não foi criado. Use o botão de criação.")
 
             st.divider()
             st.markdown("### Status da OS")
@@ -180,31 +214,3 @@ def page_operacao():
                 save(DB_OS, os_db)
                 st.success("Status atualizado!")
                 st.rerun()
-
-            st.divider()
-            st.markdown("### Apontamento de horas (MVP)")
-
-            col1, col2 = st.columns(2)
-            horas_txt = col1.text_input("Horas (ex.: 2h30, 1h, 0h45)", key=f"horas_txt_{os_id}")
-            desc = col2.text_input(
-                "Descrição",
-                placeholder="Ex.: Ajustes CAD / Reunião / DFM",
-                key=f"horas_desc_{os_id}",
-            )
-
-            if st.button("Lançar horas", key=f"add_horas_{os_id}"):
-                os_db[os_id].setdefault("horas", [])
-                os_db[os_id]["horas"].append(
-                    {"quando": _now(), "horas": horas_txt.strip(), "descricao": desc.strip()}
-                )
-                os_db[os_id]["updated_at"] = _now()
-                save(DB_OS, os_db)
-                st.success("Horas lançadas!")
-                st.rerun()
-
-            horas = os_db.get(os_id, {}).get("horas", [])
-            if horas:
-                st.write("**Lançamentos:**")
-                st.dataframe(horas, use_container_width=True)
-            else:
-                st.caption("Nenhuma hora lançada ainda.")
