@@ -18,7 +18,7 @@ def _money(x: float) -> str:
 
 
 def _ensure_list_of_dicts(value):
-    """Garante que o data_editor receba sempre list[dict]."""
+    """Garante que o editor trabalhe sempre com list[dict]."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -41,13 +41,44 @@ def _total_bloco(itens):
     return total
 
 
+def _editor_items(name: str, title: str, version: int):
+    """
+    Editor robusto para Streamlit:
+    - Dados ficam em st.session_state[f"{name}_data"]
+    - Widget usa key = f"{name}_editor_{version}"
+    """
+    st.markdown(title)
+
+    data_key = f"{name}_data"
+    editor_key = f"{name}_editor_{version}"
+
+    # storage key (não é widget key) => pode escrever sem erro
+    st.session_state.setdefault(data_key, [])
+    current = _ensure_list_of_dicts(st.session_state.get(data_key))
+
+    edited = st.data_editor(
+        current,
+        key=editor_key,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "descricao": st.column_config.TextColumn("Descrição"),
+            "qtd": st.column_config.NumberColumn("Qtd", min_value=0.0, step=1.0),
+            "valor_unit": st.column_config.NumberColumn("Valor unit (R$)", min_value=0.0, step=10.0),
+        },
+    )
+
+    # salva de volta no storage key
+    st.session_state[data_key] = _ensure_list_of_dicts(edited)
+    return st.session_state[data_key]
+
+
 def page_orcamentos():
     st.header("Orçamentos")
 
-    # defaults (evita estado quebrado)
-    st.session_state.setdefault("orc_servicos", [])
-    st.session_state.setdefault("orc_materiais", [])
-    st.session_state.setdefault("orc_terceiros", [])
+    # versão do editor (para "resetar" o data_editor sem brigar com session_state)
+    st.session_state.setdefault("orc_editor_v", 1)
+    v = st.session_state["orc_editor_v"]
 
     # Carrega bases
     clientes_db = load(DB_CLIENTES)   # {id: {...}}
@@ -85,56 +116,9 @@ def page_orcamentos():
         st.markdown("### Itens do orçamento")
         st.caption("Preencha os itens abaixo. Depois clique em **Salvar**.")
 
-        # --- Serviços
-        st.markdown("#### 1) Serviços")
-        servicos_in = _ensure_list_of_dicts(st.session_state.get("orc_servicos"))
-        st.session_state["orc_servicos"] = servicos_in
-
-        servicos = st.data_editor(
-            servicos_in,
-            key="orc_servicos",
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "descricao": st.column_config.TextColumn("Descrição"),
-                "qtd": st.column_config.NumberColumn("Qtd", min_value=0.0, step=1.0),
-                "valor_unit": st.column_config.NumberColumn("Valor unit (R$)", min_value=0.0, step=10.0),
-            },
-        )
-
-        # --- Materiais
-        st.markdown("#### 2) Materiais / Insumos")
-        materiais_in = _ensure_list_of_dicts(st.session_state.get("orc_materiais"))
-        st.session_state["orc_materiais"] = materiais_in
-
-        materiais = st.data_editor(
-            materiais_in,
-            key="orc_materiais",
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "descricao": st.column_config.TextColumn("Descrição"),
-                "qtd": st.column_config.NumberColumn("Qtd", min_value=0.0, step=1.0),
-                "valor_unit": st.column_config.NumberColumn("Valor unit (R$)", min_value=0.0, step=10.0),
-            },
-        )
-
-        # --- Terceiros
-        st.markdown("#### 3) Terceiros / Outros")
-        terceiros_in = _ensure_list_of_dicts(st.session_state.get("orc_terceiros"))
-        st.session_state["orc_terceiros"] = terceiros_in
-
-        terceiros = st.data_editor(
-            terceiros_in,
-            key="orc_terceiros",
-            use_container_width=True,
-            num_rows="dynamic",
-            column_config={
-                "descricao": st.column_config.TextColumn("Descrição"),
-                "qtd": st.column_config.NumberColumn("Qtd", min_value=0.0, step=1.0),
-                "valor_unit": st.column_config.NumberColumn("Valor unit (R$)", min_value=0.0, step=10.0),
-            },
-        )
+        servicos = _editor_items("orc_servicos", "#### 1) Serviços", v)
+        materiais = _editor_items("orc_materiais", "#### 2) Materiais / Insumos", v)
+        terceiros = _editor_items("orc_terceiros", "#### 3) Terceiros / Outros", v)
 
         # Totais
         total_serv = _total_bloco(servicos)
@@ -161,7 +145,6 @@ def page_orcamentos():
             else:
                 doc = next_doc("ORC")
                 oid = str(uuid4())[:8]
-
                 status = "ENVIADO" if salvar_enviar else "RASCUNHO"
 
                 orc_db[oid] = {
@@ -188,10 +171,13 @@ def page_orcamentos():
                 }
                 save(DB_ORC, orc_db)
 
-                # limpa editores
-                st.session_state["orc_servicos"] = []
-                st.session_state["orc_materiais"] = []
-                st.session_state["orc_terceiros"] = []
+                # limpa os dados (storage keys)
+                st.session_state["orc_servicos_data"] = []
+                st.session_state["orc_materiais_data"] = []
+                st.session_state["orc_terceiros_data"] = []
+
+                # incrementa versão para resetar os editors sem tocar nas keys de widget antigas
+                st.session_state["orc_editor_v"] = st.session_state["orc_editor_v"] + 1
 
                 st.success(f"Orçamento salvo: {doc} ({status})")
                 st.rerun()
