@@ -1,8 +1,13 @@
 import streamlit as st
 from datetime import datetime
 from io import BytesIO
+import re
+import unicodedata
 
 from src.data.storage_json import load, save
+
+# NOVO: ref_id do Produto (você já criou esse arquivo)
+from data.checklist_ref_ids import CHECKLIST_PRODUTO
 
 # PDF (ReportLab)
 from reportlab.lib.pagesizes import A4
@@ -16,6 +21,27 @@ DB_OS = "ordens_servico"
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ---------------------------------------
+# Utils: criar ref_id estável (Molde etc.)
+# ---------------------------------------
+def _slugify(texto: str) -> str:
+    """
+    Converte texto em um 'slug' simples e estável:
+    - remove acentos
+    - troca espaços por underscore
+    - remove caracteres estranhos
+    """
+    if not texto:
+        return "item"
+    t = unicodedata.normalize("NFKD", texto)
+    t = "".join([c for c in t if not unicodedata.combining(c)])
+    t = t.lower().strip()
+    t = re.sub(r"[^a-z0-9\s/_-]+", "", t)
+    t = re.sub(r"[\s/-]+", "_", t)
+    t = re.sub(r"_+", "_", t)
+    return t or "item"
 
 
 # -----------------------------
@@ -52,30 +78,49 @@ def _ensure_checklists_struct(os_db: dict, os_id: str):
 
 
 # -----------------------------
-# Checklist Produto (13 itens)
+# Checklist Produto (com ref_id)
 # -----------------------------
-CHECKLIST_PRODUTO_ITENS = [
-    "Linha de fechamento do produto",
-    "Espessura do produto",
-    "Marca do ponto de injeção aceitável",
-    "Há risco de rechupe",
-    "Ângulo de saída para desmoldagem",
-    "Necessidade de aplicação de bico quente",
-    "Bordas arredondadas na peça",
-    "Tamanho do produto",
-    "Encaixes do produto",
-    "Número de operações de montagem do produto",
-    "Mecanismo do produto",
-    "Quantidade de peças",
-    "Distribuição do produto no molde",
-]
-
-
 def _init_checklist_produto_items(os_db: dict, os_id: str):
+    """
+    Cria o checklist do Produto com ref_id.
+
+    Também "migra" OS antigas:
+    - se os itens já existirem mas não tiverem ref_id,
+      ele adiciona ref_id pelo nome do item.
+    """
     prod = os_db[os_id]["checklists"]["produto"]
-    if prod.get("itens"):
+
+    # Mapa titulo -> ref_id vindo do seu arquivo data/checklist_ref_ids.py
+    mapa = {x["titulo"]: x["ref_id"] for x in CHECKLIST_PRODUTO}
+
+    # Caso 1: não existe nada ainda -> cria do zero
+    if not prod.get("itens"):
+        prod["itens"] = [
+            {"ref_id": x["ref_id"], "nome": x["titulo"], "ok": False, "obs": ""}
+            for x in CHECKLIST_PRODUTO
+        ]
         return
-    prod["itens"] = [{"nome": nome, "ok": False, "obs": ""} for nome in CHECKLIST_PRODUTO_ITENS]
+
+    # Caso 2: já existe (OS antiga), mas itens podem não ter ref_id -> migra
+    mudou = False
+    for it in prod["itens"]:
+        # Se já tem ref_id, ok
+        if it.get("ref_id"):
+            continue
+
+        # tenta achar pelo nome
+        nome = it.get("nome", "")
+        if nome in mapa:
+            it["ref_id"] = mapa[nome]
+            mudou = True
+        else:
+            # fallback (não deve acontecer, mas garante estabilidade)
+            it["ref_id"] = f"prod_extra_{_slugify(nome)}"
+            mudou = True
+
+    # Se migrou algo, salva depois quando usuário clicar "Salvar Produto"
+    # (não vamos salvar automaticamente, respeitando sua decisão do MVP)
+    return
 
 
 def _build_checklist_produto_pdf(os_item: dict, checklist: dict) -> bytes:
@@ -120,6 +165,7 @@ def _build_checklist_produto_pdf(os_item: dict, checklist: dict) -> bytes:
     story.append(Paragraph("Itens do Checklist", styles["Heading2"]))
     story.append(Spacer(1, 6))
 
+    # Mantém igual visualmente (não imprime ref_id no PDF por enquanto)
     data = [["OK", "Item", "Observação"]]
     for it in checklist.get("itens", []) or []:
         ok = "✔" if it.get("ok") else ""
@@ -207,18 +253,48 @@ SECAO_DOCUMENTACAO = [
 
 
 def _init_checklist_molde(os_db: dict, os_id: str):
+    """
+    Cria checklist do Molde com ref_id para cada item.
+    Também migra OS antigas (se não tiver ref_id, adiciona).
+    """
     molde = os_db[os_id]["checklists"]["molde"]
-    if molde.get("secoes"):
+
+    def make_items(lista, prefixo):
+        items = []
+        for idx, nome in enumerate(lista, start=1):
+            items.append({
+                "ref_id": f"{prefixo}_{idx:02d}_{_slugify(nome)[:40]}",
+                "nome": nome,
+                "ok": False,
+                "obs": ""
+            })
+        return items
+
+    # Se ainda não existe estrutura, cria com ref_id
+    if not molde.get("secoes"):
+        molde["secoes"] = {
+            "Cavidade / Macho": make_items(SECAO_CAVIDADE_MACHO, "molde_cav"),
+            "Porta-molde": make_items(SECAO_PORTA_MOLDE, "molde_pm"),
+            "Documentação": make_items(SECAO_DOCUMENTACAO, "molde_doc"),
+        }
         return
 
-    def make_items(lista):
-        return [{"nome": n, "ok": False, "obs": ""} for n in lista]
+    # Migração: se já existe, garante ref_id em todos
+    for secao, itens in molde.get("secoes", {}).items():
+        prefixo = "molde_sec"
+        if secao.lower().startswith("cavidade"):
+            prefixo = "molde_cav"
+        elif secao.lower().startswith("porta"):
+            prefixo = "molde_pm"
+        elif secao.lower().startswith("document"):
+            prefixo = "molde_doc"
 
-    molde["secoes"] = {
-        "Cavidade / Macho": make_items(SECAO_CAVIDADE_MACHO),
-        "Porta-molde": make_items(SECAO_PORTA_MOLDE),
-        "Documentação": make_items(SECAO_DOCUMENTACAO),
-    }
+        for idx, it in enumerate(itens, start=1):
+            if not it.get("ref_id"):
+                nome = it.get("nome", "")
+                it["ref_id"] = f"{prefixo}_{idx:02d}_{_slugify(nome)[:40]}"
+
+    return
 
 
 def _build_checklist_molde_pdf(os_item: dict, checklist: dict) -> bytes:
@@ -393,12 +469,21 @@ def page_operacao():
                     _init_checklist_produto_items(os_db, os_id)
                     prod = os_db[os_id]["checklists"]["produto"]  # recarrega
 
-                    for i, item in enumerate(prod["itens"]):
+                    for item in prod["itens"]:
+                        rid = item.get("ref_id", "sem_ref_id")
                         colA, colB = st.columns([1, 3])
                         with colA:
-                            item["ok"] = st.checkbox(item["nome"], value=item.get("ok", False), key=f"prod_ok_{os_id}_{i}")
+                            item["ok"] = st.checkbox(
+                                item["nome"],
+                                value=item.get("ok", False),
+                                key=f"prod_ok_{os_id}_{rid}",
+                            )
                         with colB:
-                            item["obs"] = st.text_input("Observação", value=item.get("obs", ""), key=f"prod_obs_{os_id}_{i}")
+                            item["obs"] = st.text_input(
+                                "Observação",
+                                value=item.get("obs", ""),
+                                key=f"prod_obs_{os_id}_{rid}",
+                            )
 
                     prod["riscos"] = st.text_area("Riscos", value=prod.get("riscos", ""), key=f"prod_r_{os_id}")
                     prod["pendencias"] = st.text_area("Pendências", value=prod.get("pendencias", ""), key=f"prod_p_{os_id}")
@@ -445,12 +530,21 @@ def page_operacao():
 
                     for secao, itens in molde["secoes"].items():
                         st.markdown(f"### {secao}")
-                        for i, it in enumerate(itens):
+                        for it in itens:
+                            rid = it.get("ref_id", "sem_ref_id")
                             colA, colB = st.columns([1, 3])
                             with colA:
-                                it["ok"] = st.checkbox(it["nome"], value=it.get("ok", False), key=f"{os_id}_{secao}_{i}_ok")
+                                it["ok"] = st.checkbox(
+                                    it["nome"],
+                                    value=it.get("ok", False),
+                                    key=f"{os_id}_{rid}_ok",
+                                )
                             with colB:
-                                it["obs"] = st.text_input("Observação", value=it.get("obs", ""), key=f"{os_id}_{secao}_{i}_obs")
+                                it["obs"] = st.text_input(
+                                    "Observação",
+                                    value=it.get("obs", ""),
+                                    key=f"{os_id}_{rid}_obs",
+                                )
 
                     molde["riscos"] = st.text_area("Riscos", value=molde.get("riscos", ""), key=f"mol_r_{os_id}")
                     molde["pendencias"] = st.text_area("Pendências", value=molde.get("pendencias", ""), key=f"mol_p_{os_id}")
